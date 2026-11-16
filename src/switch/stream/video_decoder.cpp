@@ -2,8 +2,11 @@
 
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
-#ifndef __SWITCH2__
+#ifdef __SWITCH2__
+#include <switch/result.h>
+#else
 extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>

@@ -67,7 +67,15 @@ jobs:
         run: |
           set -eo pipefail
           export PATH="$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH"
-          make -f Makefile.switch2 -j"$(nproc)" 2>&1 | tee switch2-build.log
+          if ! make -f Makefile.switch2 -j"$(nproc)" 2>&1 | tee switch2-build.log; then
+            {
+              echo "### Switch 2 build failed (tail)"
+              echo '```'
+              tail -n 60 switch2-build.log || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Verify Switch 2 NRO & link map
         run: |
