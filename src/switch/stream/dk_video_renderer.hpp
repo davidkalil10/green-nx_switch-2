@@ -1,5 +1,7 @@
 #pragma once
 
+#if defined(__SWITCH__) && !defined(__SWITCH2__)
+
 // Standalone deko3d video renderer for the Switch. Renders NVTEGRA hardware
 // decoder surfaces ZERO-COPY (the decoder's GPU buffer is imported directly as
 // deko3d luma/chroma textures and colour-converted by a shader) -- the same
@@ -202,3 +204,5 @@ private:
 };
 
 }  // namespace gnx::stream
+
+#endif  // __SWITCH__ && !__SWITCH2__

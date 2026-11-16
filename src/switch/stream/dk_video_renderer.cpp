@@ -1,6 +1,6 @@
-#include "dk_video_renderer.hpp"
-
 #if defined(__SWITCH__) && !defined(__SWITCH2__)
+
+#include "dk_video_renderer.hpp"
 
 #include <switch.h>
 
