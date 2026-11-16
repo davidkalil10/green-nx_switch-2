@@ -1,0 +1,168 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g. v1.0.31pre1-switch2)'
+        required: true
+        default: 'v1.0.31pre1-switch2'
+      prerelease:
+        description: 'Publish as prerelease?'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  switch1:
+    name: Nintendo Switch 1 (.nro)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build WebRTC deps (libpeer/srtp/usrsctp/mbedtls)
+        run: bash deps/build-switch.sh
+
+      - name: Build green-nx.nro
+        run: docker run --rm -v "$PWD":/src -w /src devkitpro/devkita64 make
+
+      - name: Verify Switch 1 NRO
+        run: |
+          test -s green-nx.nro
+          ls -lh green-nx.nro
+
+      - name: Upload Switch 1 NRO
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-switch1-nro
+          if-no-files-found: error
+          path: green-nx.nro
+
+  switch2:
+    name: Nintendo Switch 2 (.nro)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: devkitpro/devkita64:20260219
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEVKITPRO: /opt/devkitpro
+      DEVKITA64: /opt/devkitpro/devkitA64
+      OUNCE_DEVKIT_COMMIT: 0f38ba80d7ee768c5749278f127749d14ece2036
+      OUNCE_DEVKIT_VERSION: '20261115'
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure git safe directory & build tools
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl xz-utils git cmake python3
+
+      - name: Prepare pinned Switch 2 SDK (ounce-devkit)
+        run: |
+          set -euo pipefail
+          sdk="$RUNNER_TEMP/ounce-devkit"
+          git init "$sdk"
+          git -C "$sdk" fetch --depth=1 https://github.com/ouncebrew/ounce-devkit.git "$OUNCE_DEVKIT_COMMIT"
+          git -C "$sdk" checkout --detach FETCH_HEAD
+          test "$(git -C "$sdk" rev-parse HEAD)" = "$OUNCE_DEVKIT_COMMIT"
+          bash "$sdk/install.sh" "$OUNCE_DEVKIT_VERSION"
+          test -f "$DEVKITPRO/libounce/switch2_rules"
+          test -f "$DEVKITPRO/portlibs/switch2/lib/libEGL.a"
+          test -f "$DEVKITPRO/portlibs/switch/lib/libSDL2.a"
+          test -f "$DEVKITPRO/portlibs/switch/lib/libcurl.a"
+
+      - name: Run package verifier unit tests
+        run: python3 -m unittest tests/test_switch2_package.py -v
+
+      - name: Build WebRTC deps for Switch 2 (libpeer/srtp/usrsctp/mbedtls)
+        run: bash deps/build-switch2.sh --in-place
+
+      - name: Build green-nx-switch2.nro
+        run: |
+          set -eo pipefail
+          export PATH="$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH"
+          make -f Makefile.switch2 -j"$(nproc)"
+
+      - name: Verify Switch 2 NRO & link map
+        run: |
+          set -euo pipefail
+          python3 tools/verify_switch2_package.py green-nx-switch2.nro \
+            --link-map build-switch2/green-nx-switch2.map
+          ls -lh green-nx-switch2.nro
+
+      - name: Upload Switch 2 NRO
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-switch2-nro
+          if-no-files-found: error
+          path: green-nx-switch2.nro
+
+  release:
+    name: Publish GitHub Release
+    needs: [switch1, switch2]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_staging
+          merge-multiple: true
+
+      - name: Prepare release metadata & checksums
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${{ inputs.release_tag }}"
+          fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          cd release_staging
+          test -s green-nx.nro
+          test -s green-nx-switch2.nro
+          sha256sum green-nx.nro green-nx-switch2.nro > SHA256SUMS.txt
+          ls -lh
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "green-nx ${{ env.RELEASE_TAG }}"
+          body: |
+            ## Downloads
+            - **Nintendo Switch 2**: `green-nx-switch2.nro` (compatible with `hbmenu` / `ounce-hbmenu` and `kaiHEN`)
+            - **Nintendo Switch 1**: `green-nx.nro`
+            - **Checksums**: `SHA256SUMS.txt`
+
+            ## Credits
+            - **Nintendo Switch 2 port (`ounce-devkit` / `libounce` / `OunceVK` OpenGL ES + hardware H.264 decoder)**: [David Kalil Braga (@davidkalil10)](https://github.com/davidkalil10)
+            - **Original project (`green-nx`)**: Thanks to [rmrf404](https://github.com/rmrf404) and [rmrf404/green-nx](https://github.com/rmrf404/green-nx)
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == true }}
+          files: |
+            release_staging/green-nx.nro
+            release_staging/green-nx-switch2.nro
+            release_staging/SHA256SUMS.txt
