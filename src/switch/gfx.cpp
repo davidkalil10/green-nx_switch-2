@@ -59,9 +59,18 @@ void Gfx::shutdown() {
 }
 
 bool Gfx::create_window_renderer() {
+#ifdef __SWITCH2__
+    Uint32 win_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN;
+    if (!window_) {
+        window_ = SDL_CreateWindow("green-nx", SDL_WINDOWPOS_CENTERED,
+                                   SDL_WINDOWPOS_CENTERED, kWidth, kHeight,
+                                   win_flags);
+    }
+#else
     window_ = SDL_CreateWindow("green-nx", SDL_WINDOWPOS_CENTERED,
                                SDL_WINDOWPOS_CENTERED, kWidth, kHeight,
                                SDL_WINDOW_SHOWN);
+#endif
     if (!window_) return false;
     renderer_ = SDL_CreateRenderer(
         window_, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
@@ -72,11 +81,18 @@ bool Gfx::create_window_renderer() {
 }
 
 bool Gfx::resume() {
+#ifdef __SWITCH2__
+    // On Switch 2, SDL_Window and OunceVK's EGLDisplay stay alive across the
+    // GLES video stream so GSV1/nvservices are never re-delegated (which fails
+    // with 0x200f3 on a second open). Only the SDL_Renderer needs recreating.
+    return create_window_renderer();
+#else
     // Re-init the video subsystem we fully quit in suspend() -- only that
     // releases the default nwindow so deko3d could own it, and only bringing it
     // back reconnects SDL as the window's producer.
     if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) return false;
     return create_window_renderer();
+#endif
 }
 
 void Gfx::suspend() {
@@ -84,12 +100,14 @@ void Gfx::suspend() {
         SDL_DestroyTexture(cached.texture);
     text_cache_.clear();
     if (renderer_) SDL_DestroyRenderer(renderer_), renderer_ = nullptr;
+#ifndef __SWITCH2__
     if (window_) SDL_DestroyWindow(window_), window_ = nullptr;
     // Destroying the window is not enough: SDL's mesa/EGL backend keeps the
     // default nwindow bound until the whole video subsystem is torn down. Fully
     // quit it so deko3d can become the window's buffer producer. SDL_Init took
     // one ref at startup, so this single Quit actually shuts the subsystem down.
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
+#endif
 }
 
 TTF_Font* Gfx::font(FontSize size) {

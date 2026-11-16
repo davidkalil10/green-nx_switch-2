@@ -9,8 +9,10 @@
 
 extern "C" {
 #include <peer.h>
+#ifndef __SWITCH2__
 #include <libavutil/frame.h>
 #include <libavutil/log.h>
+#endif
 }
 
 extern "C" void gnx_peer_log_set(void (*cb)(const char* line));
@@ -23,6 +25,7 @@ namespace {
 // libpeer's LOG_REDIRECT sink funnels through this single active engine.
 gnx::stream::Engine* g_log_engine = nullptr;
 
+#ifndef __SWITCH2__
 // Route ffmpeg's own diagnostics (H.264 reference errors, concealment, ...)
 // into stream-log; without this the decoder's complaints are invisible.
 void av_log_capture(void* avcl, int level, const char* fmt, va_list vl) {
@@ -39,6 +42,9 @@ void av_log_capture(void* avcl, int level, const char* fmt, va_list vl) {
 }
 
 void install_av_log_capture() { av_log_set_callback(&av_log_capture); }
+#else
+void install_av_log_capture() {}
+#endif
 
 // libsrtp + usrsctp are process-wide: initialized with the first Engine and
 // released once, by Engine::global_shutdown, on the way out of the app.
@@ -89,8 +95,8 @@ std::string ufrag_from_sdp(const std::string& sdp) {
 
 }  // namespace
 
-Engine::Engine(XboxAuth& auth, SDL_Renderer* renderer)
-    : auth_(auth), renderer_(renderer) {
+Engine::Engine(XboxAuth& auth, SDL_Renderer* renderer, SDL_Window* window)
+    : auth_(auth), renderer_(renderer), window_(window) {
     http_.set_abort_flag(&quit_);  // don't block shutdown on an HTTP call
     // One-time global init of libsrtp + usrsctp. Without this, srtp_create()
     // fails (no inbound SRTP -> no decryptable video) and usrsctp never
@@ -208,8 +214,13 @@ void Engine::start_common(const std::string& title_id, QualityTier tier,
     audio_.init();
     audio_.set_gain(audio_gain_);
 #ifdef __SWITCH__
+#ifdef __SWITCH2__
+    shared_frame_.reset();
+    present_frame_.reset();
+#else
     shared_frame_ = av_frame_alloc();
     present_frame_ = av_frame_alloc();
+#endif
     shared_frame_valid_ = false;
     shared_frame_seq_ = 0;
     last_present_seq_ = 0;
@@ -262,13 +273,17 @@ void Engine::stop() {
     }
 #ifdef __SWITCH__
     {
-        // Decode thread is joined; safe to release the hand-off frames (unrefs
-        // any held NVTEGRA surface back to the decoder's pool).
+        // Decode thread is joined; safe to release the hand-off frames.
         std::lock_guard<std::mutex> lock(frame_mutex_);
+#ifdef __SWITCH2__
+        shared_frame_.reset();
+        present_frame_.reset();
+#else
         if (shared_frame_) av_frame_free(&shared_frame_);
         if (present_frame_) av_frame_free(&present_frame_);
         for (SmoothFrame& queued : smooth_frames_)
             if (queued.frame) av_frame_free(&queued.frame);
+#endif
         smooth_frames_.clear();
         shared_frame_valid_ = false;
     }
@@ -956,8 +971,10 @@ void Engine::rearm_for_resume() {
         // pump_video holds on screen, under the reconnect notice, until the
         // replacement delivers.
         std::lock_guard<std::mutex> lock(frame_mutex_);
+#ifndef __SWITCH2__
         for (SmoothFrame& queued : smooth_frames_)
             if (queued.frame) av_frame_free(&queued.frame);
+#endif
         smooth_frames_.clear();
         shared_frame_valid_ = false;
     }
@@ -1455,7 +1472,11 @@ bool Engine::run_peer(GssvSession& session) {
                 prev_hud_bytes = vb;
                 prev_hud_time = now;
                 float loss_pct = static_cast<float>(fraction) * 100.0f / 255.0f;
+#ifdef __SWITCH2__
+                gl_video_.set_net_stats(mbps, loss_pct, audio_.stats().queue_ms);
+#else
                 dk_video_.set_net_stats(mbps, loss_pct, audio_.stats().queue_ms);
+#endif
 #endif
             }
         }
@@ -1685,6 +1706,21 @@ void Engine::decode_loop() {
             {
                 std::lock_guard<std::mutex> lock(frame_mutex_);
                 ++shared_frame_seq_;
+#ifdef __SWITCH2__
+                if (pacing_ == VideoPacing::Smooth) {
+                    std::shared_ptr<const Switch2Frame> queued =
+                        video_.current_frame();
+                    if (queued)
+                        smooth_frames_.push_back({std::move(queued), shared_frame_seq_});
+                    while (smooth_frames_.size() > 4) {
+                        smooth_frames_.pop_front();
+                        pace_skip_.fetch_add(1, std::memory_order_relaxed);
+                    }
+                } else {
+                    shared_frame_ = video_.current_frame();
+                    shared_frame_valid_ = static_cast<bool>(shared_frame_);
+                }
+#else
                 if (pacing_ == VideoPacing::Smooth) {
                     // Source order, not newest-wins: the clone refs the same
                     // NVTEGRA surface, so the hard cap below is what keeps the
@@ -1703,6 +1739,7 @@ void Engine::decode_loop() {
                     av_frame_ref(shared_frame_, video_.current_frame());
                     shared_frame_valid_ = true;
                 }
+#endif
             }
             if (!got_frame_) {
                 got_frame_ = true;
@@ -1754,6 +1791,73 @@ SDL_Texture* Engine::pump_video() {
     // user stares at a silent freeze and force-quits seconds before the
     // replacement session delivers (that is how pre3 died in testing).
     bool resuming = resuming_.load(std::memory_order_relaxed);
+#ifdef __SWITCH2__
+    gl_video_.set_notice(resuming ? status() : std::string());
+    if (gl_video_.initialized() && (got_frame_ || resuming) &&
+        now >= next_present_counter_) {
+        std::shared_ptr<const Switch2Frame> frame;
+        uint64_t frame_seq = 0;
+        {
+            std::lock_guard<std::mutex> lock(frame_mutex_);
+            if (!got_frame_) {
+                if (present_frame_) {
+                    frame = present_frame_;
+                    frame_seq = last_present_seq_;
+                }
+            } else if (pacing_ == VideoPacing::Smooth) {
+                uint32_t period =
+                    source_refresh_period_.load(std::memory_order_relaxed);
+                bool due = !smooth_have_present_ ||
+                           ++smooth_refresh_phase_ >= period;
+                if (due && smooth_frames_.size() >= 2) {
+                    SmoothFrame next = std::move(smooth_frames_.front());
+                    smooth_frames_.pop_front();
+                    present_frame_ = std::move(next.frame);
+                    frame_seq = next.seq;
+                    smooth_have_present_ = true;
+                    smooth_refresh_phase_ = 0;
+                } else if (smooth_have_present_) {
+                    frame_seq = last_present_seq_;
+                }
+                if (smooth_have_present_) frame = present_frame_;
+            } else if (shared_frame_valid_ && shared_frame_) {
+                present_frame_ = shared_frame_;
+                frame = present_frame_;
+                frame_seq = shared_frame_seq_;
+            }
+        }
+        if (frame) {
+            if (frame_seq != last_present_seq_) {
+                pace_new_.fetch_add(1, std::memory_order_relaxed);
+                if (last_present_seq_) {
+                    if (present_hold_refreshes_ == 1)
+                        pace_hold1_.fetch_add(1, std::memory_order_relaxed);
+                    else if (present_hold_refreshes_ == 2)
+                        pace_hold2_.fetch_add(1, std::memory_order_relaxed);
+                    else if (present_hold_refreshes_ == 3)
+                        pace_hold3_.fetch_add(1, std::memory_order_relaxed);
+                    else
+                        pace_hold4p_.fetch_add(1, std::memory_order_relaxed);
+                    if (frame_seq > last_present_seq_ + 1)
+                        pace_skip_.fetch_add(
+                            static_cast<uint32_t>(frame_seq -
+                                                  last_present_seq_ - 1),
+                            std::memory_order_relaxed);
+                }
+                last_present_seq_ = frame_seq;
+                present_hold_refreshes_ = 1;
+            } else {
+                pace_repeat_.fetch_add(1, std::memory_order_relaxed);
+                ++present_hold_refreshes_;
+            }
+            gl_video_.render(frame.get());
+        }
+        next_present_counter_ += interval;
+        if (next_present_counter_ < now)
+            next_present_counter_ = now + interval;
+    }
+    return nullptr;
+#else
     dk_video_.set_notice(resuming ? status() : std::string());
     if (dk_video_.initialized() && (got_frame_ || resuming) &&
         now >= next_present_counter_) {
@@ -1827,6 +1931,7 @@ SDL_Texture* Engine::pump_video() {
             next_present_counter_ = now + interval;
     }
     return nullptr;
+#endif
 #else
     // PC: no decode thread (SDL texture upload must stay on this render thread),
     // so decode inline and hand back the SDL texture.
@@ -1853,7 +1958,14 @@ SDL_Texture* Engine::pump_video() {
 }
 
 bool Engine::begin_deko_output() {
-#ifdef __SWITCH__
+#ifdef __SWITCH2__
+    gl_video_.set_logger([this](const char* m) { log(std::string(m)); });
+    gl_video_.set_sharpness(sharpness_);
+    gl_video_.set_hud_enabled(debug_hud_);
+    bool ok = gl_video_.init(window_);
+    log(ok ? "gles output started" : "gles output FAILED to start");
+    return ok;
+#elif defined(__SWITCH__)
     dk_video_.set_logger([this](const char* m) { log(std::string(m)); });
     dk_video_.set_sharpness(sharpness_);
     dk_video_.set_hud_enabled(debug_hud_);
@@ -1866,7 +1978,10 @@ bool Engine::begin_deko_output() {
 }
 
 void Engine::end_deko_output() {
-#ifdef __SWITCH__
+#ifdef __SWITCH2__
+    gl_video_.shutdown();
+    log("gles output stopped");
+#elif defined(__SWITCH__)
     dk_video_.shutdown();
     log("deko3d output stopped");
 #endif

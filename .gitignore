@@ -1,6 +1,7 @@
 # Build artifacts
 build/
 build-switch/
+build-switch2/
 *.nro
 *.elf
 *.nacp
@@ -12,12 +13,17 @@ build-switch/
 # Generated shaders (built from shaders/ by make)
 romfs/shaders/
 
-# Cross-compiled WebRTC deps (regenerate with deps/build-switch.sh)
+# Cross-compiled WebRTC deps (regenerate with deps/build-switch.sh / build-switch2.sh)
 deps/src/
 deps/switch/
+deps/switch2/
 
 # Reference clients (studied during development)
 references/
+
+# Python
+__pycache__/
+*.pyc
 
 # macOS
 .DS_Store

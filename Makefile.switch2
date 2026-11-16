@@ -1,0 +1,106 @@
+#---------------------------------------------------------------------------------
+# Nintendo Switch 2 build (devkitA64 + ounce-devkit / libounce + OunceVK).
+#---------------------------------------------------------------------------------
+.SUFFIXES:
+
+ifeq ($(strip $(DEVKITPRO)),)
+$(error "DEVKITPRO not set - build inside devkitpro/devkita64 with ounce-devkit installed")
+endif
+
+include $(DEVKITPRO)/libounce/switch2_rules
+
+APP_TITLE   := green-nx (Switch 2)
+APP_AUTHOR  := rmrf404 / David Kalil Braga
+APP_VERSION := 1.0.31pre1
+APP_ICON    := icon.jpg
+
+TARGET   := green-nx-switch2
+BUILD    := build-switch2
+SOURCES  := src/core src/switch vendor
+INCLUDES := src vendor deps/shim/include
+
+DEFINES := -DGNX_VERSION=\"$(APP_VERSION)\" -D__SWITCH__ -D__SWITCH2__
+
+# Native streaming switches on automatically once the Switch 2 WebRTC deps are
+# built (bash deps/build-switch2.sh).
+GNXROOT := $(dir $(abspath $(firstword $(MAKEFILE_LIST))))
+ifneq ($(strip $(wildcard $(GNXROOT)deps/switch2/lib/libpeer.a)),)
+DEFINES       += -DGNX_NATIVE_STREAM
+SOURCES       += src/switch/stream
+EXTRA_LIBDIRS := $(GNXROOT)deps/switch2
+STREAM_LIBS   := -lpeer -lsrtp2 -lusrsctp
+STREAM_PKGS   := opus
+export GNX_STREAM_DEPS := $(wildcard $(GNXROOT)deps/switch2/lib/lib*.a)
+endif
+
+ARCH := $(SWITCH2_CPU) -mtp=soft -fPIE
+
+CFLAGS   := -g -Wall -O2 -ffunction-sections $(ARCH) $(DEFINES) $(INCLUDE)
+CXXFLAGS := $(CFLAGS) -fno-rtti -std=gnu++17
+ASFLAGS  := -g $(ARCH)
+LDFLAGS   = -specs=$(DEVKITPRO)/libounce/switch.specs -g $(ARCH) \
+            -Wl,-Map,$(notdir $*.map)
+
+# Avoid Switch 1's sdl2.pc injecting /libnx/ or Switch 1 Mesa (-lglapi /
+# -ldrm_nouveau / Switch 1 libEGL). Filter those out and link OunceVK's -lEGL
+# and libounce's -lnx explicitly in OVERLAY_LIBPATHS -> LIBPATHS order.
+PKGCONF := $(DEVKITPRO)/portlibs/switch2/bin/aarch64-none-elf-pkg-config
+RAW_PKG_LIBS := $(shell $(PKGCONF) --libs $(STREAM_PKGS) SDL2_ttf SDL2_image sdl2 libcurl)
+FILTERED_PKG_LIBS := $(filter-out %/libnx/lib %/libnx/lib/libnx.a -lEGL -lglapi -ldrm_nouveau -lnx,$(RAW_PKG_LIBS))
+
+LIBS := $(STREAM_LIBS) \
+        $(FILTERED_PKG_LIBS) \
+        -lmbedtls -lmbedx509 -lmbedcrypto -lz \
+        -lEGL -lnx -lm
+LIBDIRS := $(EXTRA_LIBDIRS) $(PORTLIBS) $(LIBNX)
+
+#---------------------------------------------------------------------------------
+ifneq ($(BUILD),$(notdir $(CURDIR)))
+
+export OUTPUT := $(CURDIR)/$(TARGET)
+export TOPDIR := $(CURDIR)
+
+export VPATH := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir))
+export DEPSDIR := $(CURDIR)/$(BUILD)
+
+CFILES   := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+CPPFILES := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+
+export LD := $(CXX)
+export OFILES := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o)
+export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
+                  -I$(PORTLIBS_SWITCH2)/include \
+                  $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
+                  -I$(PORTLIBS)/include/SDL2 \
+                  -I$(CURDIR)/$(BUILD)
+export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
+
+export NROFLAGS += --icon=$(CURDIR)/$(APP_ICON) --nacp=$(CURDIR)/$(TARGET).nacp
+
+.PHONY: all clean
+
+all: $(BUILD)
+	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile.switch2
+
+$(BUILD):
+	@mkdir -p $@
+
+clean:
+	@rm -rf $(BUILD) $(TARGET).nro $(TARGET).nacp $(TARGET).elf $(TARGET).map
+
+#---------------------------------------------------------------------------------
+else
+
+all: $(OUTPUT).nro
+
+$(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp
+$(OUTPUT).elf: $(OFILES) $(GNX_STREAM_DEPS)
+$(OFILES): $(MAKEFILE_LIST)
+
+%.o: %.cpp
+	@echo $(notdir $<)
+	$(CXX) -MMD -MP -MF $(DEPSDIR)/$*.d $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@ $(ERROR_FILTER)
+
+-include $(DEPSDIR)/*.d
+
+endif

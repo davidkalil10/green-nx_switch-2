@@ -1,13 +1,16 @@
 # green-nx
 
 A standalone, open-source **Xbox Cloud Gaming (xCloud) client for the Nintendo
-Switch** (homebrew). Sign in with your Microsoft account and stream your Game
-Pass library natively — WebRTC connection, hardware H.264 decoding and
-GPU rendering are all done on the console, with no companion apps or PCs
-involved.
+Switch and Nintendo Switch 2** (homebrew). Sign in with your Microsoft account
+and stream your Game Pass library natively — WebRTC connection, hardware H.264
+decoding and GPU rendering are all done on the console, with no companion apps
+or PCs involved.
 
 **Fully working:** sign-in, game library with box art and search, and smooth
 720p / 1080p / 1080p HQ streaming with audio and full controller input.
+
+> **Nintendo Switch 2 support** added by **David Kalil Braga** ([@davidkalil10](https://github.com/davidkalil10)), compatible with **hbmenu** (`ounce-hbmenu`) and **kaiHEN**, using [ounce-devkit](https://github.com/ouncebrew/ounce-devkit) (`libounce` + `OunceVK` + `GSV1/viddec`).
+> Special thanks to **rmrf404** and the original **[rmrf404/green-nx](https://github.com/rmrf404/green-nx)** project (and its contributors) for creating and maintaining the original Nintendo Switch client that made this Switch 2 port possible.
 
 ## Features
 
@@ -19,9 +22,7 @@ involved.
   not on xCloud at all says so instead of "nothing found"
 - **Native WebRTC streaming**: ICE (Teredo), DTLS-SRTP, SCTP data channels,
   RTP video/audio, NACK/PLI recovery — implemented on-console
-- **Hardware H.264 decoding** (NVDEC via FFmpeg's NVTEGRA hwaccel) with
-  **zero-copy GPU rendering** (deko3d) — the decoded surface goes straight
-  from the decoder to the screen
+- **Hardware H.264 decoding** (`NVDEC` via FFmpeg's `NVTEGRA` hwaccel on Switch 1; native `GSV1` / `viddec` on Switch 2) with **GPU rendering** (`deko3d` zero-copy on Switch 1; `OunceVK` OpenGL ES 3.0 with luma sharpening and debug HUD on Switch 2)
 - Opus audio, 60 fps video, three quality tiers (720p / 1080p / 1080p HQ)
 - **Ad-supported streaming** for free-to-play titles: no subscription needed,
   streamed from Microsoft's ad-supported offering (sessions are capped by the
@@ -29,7 +30,8 @@ involved.
 
 ## Requirements
 
-- A Nintendo Switch running the [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere) custom firmware
+- **Nintendo Switch:** running the [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere) custom firmware
+- **Nintendo Switch 2:** compatible with **hbmenu** (`ounce-hbmenu`) and **[kaiHEN](https://github.com/ouncebrew/kaihen)** (use `green-nx-switch2.nro`)
 - An **Xbox Game Pass** subscription for the subscription catalog — every tier
   (Essential, Premium, Ultimate) includes Cloud Gaming; Ultimate streams the
   largest catalog at the highest quality. Games you already own stream without
@@ -38,9 +40,10 @@ involved.
 
 ## Install
 
-1. Copy `green-nx.nro` to `sdmc:/switch/` on your SD card.
-2. Launch **in title mode** — hold **R** while starting an installed game.
+1. Copy `green-nx.nro` (Switch 1) or `green-nx-switch2.nro` (Switch 2) to `sdmc:/switch/` on your SD card (or send via Netloader / `nxlink`).
+2. On Switch 1, launch **in title mode** — hold **R** while starting an installed game.
    (Applet mode does not have enough memory for hardware video decoding.)
+   On Switch 2, launch `green-nx-switch2.nro` from `ounce-hbmenu`.
 3. Sign in once with the device code shown on screen (`microsoft.com/link`).
    Tokens and the game list are cached in `sdmc:/switch/green-nx/`.
 
@@ -76,18 +79,39 @@ development on a PC:
 ./build/pc/greennx stream-test FORTNITE --ads   # ad-supported offering
 ```
 
+### Nintendo Switch 2 (`green-nx-switch2.nro`)
+
+Built with devkitA64 + [ounce-devkit](https://github.com/ouncebrew/ounce-devkit) (`libounce` + `OunceVK`):
+
+```sh
+# 1. Build the Switch 2 WebRTC dependencies once (libpeer, libsrtp, usrsctp, mbedTLS)
+bash deps/build-switch2.sh
+
+# 2. Build the Switch 2 .nro inside an ounce-devkit container
+docker run --rm -v "$PWD":/src -w /src ounce-devkit make -f Makefile.switch2
+
+# 3. Verify Switch 2 OUN0 startup header, ASET assets and link map
+python3 tools/verify_switch2_package.py green-nx-switch2.nro --link-map build-switch2/green-nx-switch2.map
+```
+
 ### Layout
 
 ```
 src/core/            auth, catalog, HTTP, xCloud session + protocol
 src/switch/          UI (SDL2), covers, input
 src/switch/stream/   streaming engine: WebRTC glue, RTP jitter buffer,
-                     NVDEC decoder, deko3d zero-copy renderer, Opus audio
-shaders/             deko3d video shaders (compiled by uam during make)
-deps/                build script + patches for the WebRTC stack
+                     NVDEC/deko3d (Switch 1) & viddec/OunceVK GLES3 (Switch 2),
+                     Opus audio
+shaders/             deko3d video shaders (compiled by uam during Switch 1 make)
+deps/                build scripts (build-switch.sh / build-switch2.sh) + patches
+tools/               Switch 2 NRO & link-map verifier (verify_switch2_package.py)
 ```
 
-## Third-party software
+## Credits & Third-party software
+
+- **Original project:** [rmrf404/green-nx](https://github.com/rmrf404/green-nx) by **rmrf404** and contributors — thank you for building and open-sourcing `green-nx`!
+- **Nintendo Switch 2 port:** **David Kalil Braga** ([@davidkalil10](https://github.com/davidkalil10)) — Switch 2 `libounce` (`GSV1`/`viddec`) hardware H.264 decoder, `OunceVK` OpenGL ES 3.0 renderer, `Makefile.switch2`, dependency builder and CI verification.
+- **Switch 2 toolchain & libraries:** [ounce-devkit](https://github.com/ouncebrew/ounce-devkit), [libounce](https://github.com/ouncebrew/libounce), [OunceVK](https://github.com/ouncebrew/ouncevk), and [kaiHEN](https://github.com/ouncebrew/kaihen).
 
 green-nx builds on these open-source projects:
 

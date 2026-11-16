@@ -1,5 +1,7 @@
 #include "dk_video_renderer.hpp"
 
+#if defined(__SWITCH__) && !defined(__SWITCH2__)
+
 #include <switch.h>
 
 #define SDL_MAIN_HANDLED
@@ -716,3 +718,5 @@ bool DkVideoRenderer::render(AVFrame* frame) {
 }
 
 }  // namespace gnx::stream
+
+#endif  // __SWITCH__ && !__SWITCH2__

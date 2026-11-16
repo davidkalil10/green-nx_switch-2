@@ -2491,7 +2491,9 @@ int main(int argc, char** argv) {
     // and any smaller bundle only postpones the failure to whichever request
     // happens to cross 71. The firmware's own root store validates every
     // endpoint this app talks to, so let it do the job.
+#ifndef __SWITCH2__
     romfsInit();  // shaders
+#endif
 #endif
     mkdir(kDataDir, 0755);
 
@@ -2522,8 +2524,8 @@ int main(int argc, char** argv) {
 #endif
     app.scene_started = SDL_GetTicks();
 #ifdef GNX_NATIVE_STREAM
-    app.engine =
-        std::make_unique<stream::Engine>(*app.auth, app.gfx.renderer());
+    app.engine = std::make_unique<stream::Engine>(
+        *app.auth, app.gfx.renderer(), app.gfx.window());
 #endif
 
     bool running = true;
@@ -3193,8 +3195,10 @@ int main(int argc, char** argv) {
 #ifdef __SWITCH__
     // One breadcrumb per service: a black screen on exit hangs somewhere in
     // here, and "gfx shut down" alone doesn't say which call never returned.
+#ifndef __SWITCH2__
     romfsExit();
     breadcrumb("romfs exit");
+#endif
     plExit();
     breadcrumb("pl exit");
     socketExit();

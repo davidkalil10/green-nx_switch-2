@@ -41,6 +41,7 @@ public:
     void shutdown();
 
     SDL_Renderer* renderer() { return renderer_; }
+    SDL_Window* window() { return window_; }
 
     // Release the SDL window/renderer so deko3d can take over the single Switch
     // display during streaming; resume() rebuilds them afterwards. Cached

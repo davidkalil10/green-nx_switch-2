@@ -18,7 +18,9 @@
 #include "audio_player.hpp"
 #include "video_decoder.hpp"
 #include "video_jitter.hpp"
-#ifdef __SWITCH__
+#ifdef __SWITCH2__
+#include "gl_video_renderer.hpp"
+#elif defined(__SWITCH__)
 #include "dk_video_renderer.hpp"
 #endif
 
@@ -50,7 +52,8 @@ enum class VideoPacing { Steady = 0, Smooth = 1 };
 // NVDEC/SDL video + Opus audio + gamepad input channel.
 class Engine {
 public:
-    Engine(XboxAuth& auth, SDL_Renderer* renderer);
+    Engine(XboxAuth& auth, SDL_Renderer* renderer,
+           SDL_Window* window = nullptr);
     ~Engine();
 
     // Releases the process-wide WebRTC state (libsrtp, usrsctp and its two
@@ -86,7 +89,9 @@ public:
     // the in-stream combo can flip it mid-session, not just before start().
     void set_debug_hud(bool enabled) {
         debug_hud_ = enabled;
-#ifdef __SWITCH__
+#ifdef __SWITCH2__
+        gl_video_.set_hud_enabled(enabled);
+#elif defined(__SWITCH__)
         dk_video_.set_hud_enabled(enabled);
 #endif
     }
@@ -183,6 +188,7 @@ private:
 
     XboxAuth& auth_;
     SDL_Renderer* renderer_;
+    SDL_Window* window_ = nullptr;
     Http http_;  // worker-thread HTTP client
 
     std::atomic<EngineState> state_{EngineState::Idle};
@@ -286,7 +292,9 @@ private:
     std::atomic<Uint64> last_manual_recovery_{0};
 
     VideoDecoder video_;  // width()/height() are render-thread reads only
-#ifdef __SWITCH__
+#ifdef __SWITCH2__
+    GlesVideoRenderer gl_video_;  // render-thread: OunceVK GLES3 -> display
+#elif defined(__SWITCH__)
     DkVideoRenderer dk_video_;  // render-thread: zero-copy NVTEGRA -> display
 #endif
     VideoJitterBuffer jitter_;  // worker-thread only (RTP -> access units)
@@ -299,22 +307,29 @@ private:
 
     // Decoded-frame handoff (Switch): decode_thread_ decodes into shared_frame_;
     // the render thread (pump_video) takes its own ref into present_frame_ so it
-    // can present zero-copy while the decode thread keeps producing. Two refs of
-    // the same NVTEGRA surface keep it alive across the hand-off.
+    // can present while the decode thread keeps producing.
     std::thread decode_thread_;
     std::mutex frame_mutex_;
+#ifdef __SWITCH2__
+    std::shared_ptr<const Switch2Frame> shared_frame_;
+    std::shared_ptr<const Switch2Frame> present_frame_;
+#else
     AVFrame* shared_frame_ = nullptr;   // latest decoded (decode thread writes)
     AVFrame* present_frame_ = nullptr;  // render thread's stable ref
+#endif
     bool shared_frame_valid_ = false;
     uint64_t shared_frame_seq_ = 0;     // protected by frame_mutex_
 
     // Smooth pacing (VideoPacing::Smooth): decoded frames queue in source
     // order instead of newest-wins; pump_video presents them on a detected
     // 30/60 Hz cadence with one frame held in reserve to absorb arrival
-    // jitter. The queue is capped hard: each entry pins an NVTEGRA surface
-    // from the decoder's small pool, so letting it grow would starve NVDEC.
+    // jitter.
     struct SmoothFrame {
+#ifdef __SWITCH2__
+        std::shared_ptr<const Switch2Frame> frame;
+#else
         AVFrame* frame = nullptr;
+#endif
         uint64_t seq = 0;
     };
     std::deque<SmoothFrame> smooth_frames_;  // protected by frame_mutex_
