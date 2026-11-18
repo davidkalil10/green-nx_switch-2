@@ -1,5 +1,7 @@
 # green-nx
 
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20this%20project-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/davidkalil10)
+
 A standalone, open-source **Xbox Cloud Gaming (xCloud) client for the Nintendo
 Switch and Nintendo Switch 2** (homebrew). Sign in with your Microsoft account
 and stream your Game Pass library natively — WebRTC connection, hardware H.264
@@ -144,3 +146,11 @@ implements a client for a service you already pay for.
 ## License
 
 [GPL-3.0](LICENSE)
+
+## Support
+
+If you find **green-nx (Switch 2 Port)** and our Nintendo Switch 2 homebrew ports useful, consider buying me a coffee to support continued development and maintenance:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/davidkalil10)
+
+👉 **[https://ko-fi.com/davidkalil10](https://ko-fi.com/davidkalil10)**
